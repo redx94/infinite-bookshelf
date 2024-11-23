@@ -2,6 +2,11 @@
 import streamlit as st
 from groq import Groq
 import json
+import os
+import io
+import ebooklib
+from ebooklib import epub
+from docx import Document
 
 from infinite_bookshelf.agents import (
     generate_section,
@@ -13,155 +18,190 @@ from infinite_bookshelf.tools import create_markdown_file, create_pdf_file
 from infinite_bookshelf.ui.components import (
     render_groq_form,
     display_statistics,
-    render_download_buttons,
 )
 from infinite_bookshelf.ui import Book, load_return_env, ensure_states
 
+# Utility Functions for Book Export
+def create_epub_file(book):
+    """Create an ePub file from the book content"""
+    epub_book = epub.EpubBook()
+    epub_book.set_title(book.book_title)
+    epub_book.set_language('en')
 
-# 2: Initialize env variables and session states
-GROQ_API_KEY = load_return_env(["GROQ_API_KEY"])["GROQ_API_KEY"]
+    # Create chapters
+    chapters = []
+    for title, content in book.contents.items():
+        chapter = epub.EpubHtml(title=title, file_name=f'{title}.xhtml', lang='en')
+        chapter.set_content(f'<h1>{title}</h1><p>{content}</p>')
+        epub_book.add_item(chapter)
+        chapters.append(chapter)
 
-states = {
-    "api_key": GROQ_API_KEY,
-    "button_disabled": False,
-    "button_text": "Generate",
-    "statistics_text": "",
-    "book_title": "",
-}
+    # Create Table of Contents
+    epub_book.toc = tuple(chapters)
+    epub_book.add_item(epub.EpubNcx())
+    epub_book.add_item(epub.EpubNav())
 
-if GROQ_API_KEY:
-    states["groq"] = (
-        Groq()
-    )  # Define Groq provider if API key provided. Otherwise defined later after API key is provided.
+    # Basic styling
+    style = 'BODY {color: white;}'
+    nav_css = epub.EpubItem(uid="style_nav", file_name="style/nav.css", media_type="text/css", content=style)
+    epub_book.add_item(nav_css)
 
-ensure_states(states)
+    # Write ePub
+    epub_buffer = io.BytesIO()
+    epub.write_epub(epub_buffer, epub_book, {})
+    epub_buffer.seek(0)
+    return epub_buffer
 
+def create_docx_file(book):
+    """Create a DOCX file from the book content"""
+    doc = Document()
+    doc.add_heading(book.book_title, level=1)
+    
+    for title, content in book.contents.items():
+        doc.add_heading(title, level=2)
+        doc.add_paragraph(content)
+    
+    docx_buffer = io.BytesIO()
+    doc.save(docx_buffer)
+    docx_buffer.seek(0)
+    return docx_buffer
 
-# 3: Define Streamlit page structure and functionality
-st.write(
-    """
-# Infinite Bookshelf: Write full books using llama3 (8b and 70b) on Groq
-"""
-)
+def get_available_groq_models():
+    """Fetch available Groq models"""
+    try:
+        groq = Groq()
+        models = groq.models.list()
+        return [model.id for model in models.data]
+    except Exception as e:
+        st.error(f"Could not fetch Groq models: {e}")
+        return ["llama3-8b-8192", "llama3-70b-8192", "gemma-7b-it"]
 
-col1, col2 = st.columns([0.7,0.3])
-with col1:
-    st.info(
-        "You are using a streamlined version. Try the new [advanced version](/advanced) in beta."
-    )
-
-with col2:
-    st.image("assets/logo/powered-by-groq.svg", width=150)
-
-
-def disable():
-    st.session_state.button_disabled = True
-
-
-def enable():
-    st.session_state.button_disabled = False
-
-
-def empty_st():
-    st.empty()
-
-
-try:
-    if st.button("End Generation and Download Book"):
-        if "book" in st.session_state:
-            render_download_buttons(st.session_state.get("book"))
-
-    submitted, groq_input_key, topic_text, additional_instructions = render_groq_form(
-        on_submit=disable,
-        button_disabled=st.session_state.button_disabled,
-        button_text=st.session_state.button_text,
-    )
-
-    if submitted:
-        if len(topic_text) < 10:
-            raise ValueError("Book topic must be at least 10 characters long")
-
-        st.session_state.button_disabled = True
-        st.session_state.statistics_text = (
-            "Generating book title and structure in background...."
-        )
-
-        placeholder = st.empty()
-        display_statistics(
-            placeholder=placeholder, statistics_text=st.session_state.statistics_text
-        )
-
-        if not GROQ_API_KEY:
-            st.session_state.groq = Groq(api_key=groq_input_key)
-
-        # Step 1: Generate book structure using structure_writer agent
-        large_model_generation_statistics, book_structure = generate_book_structure(
-            prompt=topic_text,
-            additional_instructions=additional_instructions,
-            model="llama3-70b-8192",
-            groq_provider=st.session_state.groq,
-        )
-
-        # Step 2: Generate book title using title_writer agent
-        st.session_state.book_title = generate_book_title(
-            prompt=topic_text,
-            model="llama3-70b-8192",
-            groq_provider=st.session_state.groq,
-        )
-
-        st.write(f"## {st.session_state.book_title}")
-
-        total_generation_statistics = GenerationStatistics(model_name="llama3-8b-8192")
-
-        # Step 3: Generate book section content using section_writer agent
-        try:
+def advanced_book_generation():
+    """Advanced book generation workflow"""
+    st.title("Advanced Book Generation")
+    
+    # Model Selection
+    available_models = get_available_groq_models()
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        title_model = st.selectbox("Title Generation Model", available_models)
+    with col2:
+        structure_model = st.selectbox("Structure Generation Model", available_models)
+    with col3:
+        content_model = st.selectbox("Content Generation Model", available_models)
+    
+    # Book Topic and Instructions
+    topic = st.text_input("Book Topic")
+    additional_instructions = st.text_area("Additional Instructions")
+    
+    # Generation Workflow
+    if st.button("Generate Book"):
+        with st.spinner("Generating Book..."):
+            # Title Generation
+            book_title = generate_book_title(
+                prompt=topic, 
+                model=title_model, 
+                groq_provider=Groq()
+            )
+            
+            # Structure Generation
+            _, book_structure = generate_book_structure(
+                prompt=topic,
+                additional_instructions=additional_instructions,
+                model=structure_model,
+                groq_provider=Groq()
+            )
+            
+            # Create Book Object
             book_structure_json = json.loads(book_structure)
-            book = Book(st.session_state.book_title, book_structure_json)
-
-            if "book" not in st.session_state:
-                st.session_state.book = book
-
-            # Print the book structure to the terminal to show structure
-            print(json.dumps(book_structure_json, indent=2))
-
-            st.session_state.book.display_structure()
-
-            def stream_section_content(sections):
+            book = Book(book_title, book_structure_json)
+            
+            # Content Generation
+            def generate_book_content(sections):
                 for title, content in sections.items():
                     if isinstance(content, str):
-                        content_stream = generate_section(
-                            prompt=(title + ": " + content),
+                        generated_content = generate_section(
+                            prompt=f"{title}: {content}",
                             additional_instructions=additional_instructions,
-                            model="llama3-8b-8192",
-                            groq_provider=st.session_state.groq,
+                            model=content_model,
+                            groq_provider=Groq()
                         )
-                        for chunk in content_stream:
-                            # Check if GenerationStatistics data is returned instead of str tokens
-                            chunk_data = chunk
-                            if type(chunk_data) == GenerationStatistics:
-                                total_generation_statistics.add(chunk_data)
-
-                                st.session_state.statistics_text = str(
-                                    total_generation_statistics
-                                )
-                                display_statistics(
-                                    placeholder=placeholder,
-                                    statistics_text=st.session_state.statistics_text,
-                                )
-
-                            elif chunk != None:
-                                st.session_state.book.update_content(title, chunk)
+                        book.update_content(title, generated_content)
                     elif isinstance(content, dict):
-                        stream_section_content(content)
+                        generate_book_content(content)
+            
+            generate_book_content(book_structure_json)
+            
+            # Display Book
+            st.write(f"# {book.book_title}")
+            book.display_structure()
+            
+            # Export Options
+            st.subheader("Export Book")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                if st.download_button(
+                    label="Download PDF", 
+                    data=create_pdf_file(book.get_markdown_content()),
+                    file_name=f"{book_title}.pdf"
+                ):
+                    st.success("PDF Downloaded")
+            
+            with col2:
+                if st.download_button(
+                    label="Download ePub", 
+                    data=create_epub_file(book),
+                    file_name=f"{book_title}.epub"
+                ):
+                    st.success("ePub Downloaded")
+            
+            with col3:
+                if st.download_button(
+                    label="Download DOCX", 
+                    data=create_docx_file(book),
+                    file_name=f"{book_title}.docx"
+                ):
+                    st.success("DOCX Downloaded")
+            
+            with col4:
+                if st.download_button(
+                    label="Download Markdown", 
+                    data=create_markdown_file(book.get_markdown_content()),
+                    file_name=f"{book_title}.md"
+                ):
+                    st.success("Markdown Downloaded")
+            
+            # Edit Book Option
+            st.subheader("Edit Book")
+            edit_mode = st.checkbox("Enable Editing")
+            
+            if edit_mode:
+                for title in book.contents.keys():
+                    st.subheader(title)
+                    edited_content = st.text_area(
+                        f"Edit {title}", 
+                        value=book.contents[title]
+                    )
+                    
+                    if st.button(f"Save Changes for {title}"):
+                        book.update_content(title, edited_content)
+                        st.success(f"Updated {title}")
 
-            stream_section_content(book_structure_json)
+def main():
+    st.sidebar.title("Infinite Bookshelf")
+    
+    # Navigation
+    page = st.sidebar.radio(
+        "Choose a Page", 
+        ["Advanced Book Generation", "Simple Book Generation"]
+    )
+    
+    if page == "Advanced Book Generation":
+        advanced_book_generation()
+    else:
+        st.write("Simple Book Generation (To be implemented)")
 
-        except json.JSONDecodeError:
-            st.error("Failed to decode the book structure. Please try again.")
-
-except Exception as e:
-    st.session_state.button_disabled = False
-    st.error(e)
-
-    if st.button("Clear"):
-        st.rerun()
+if __name__ == "__main__":
+    main()
