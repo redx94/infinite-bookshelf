@@ -53,13 +53,13 @@ Infinite Bookshelf is a streamlit app that scaffolds the creation of books from 
 ## Quickstart
 
 > [!IMPORTANT]
-> To use Infinite Bookshelf, you can use the hosted version at [infinite-bookshelfs.streamlit.app](https://infinite-bookshelfs.streamlit.app)
+> To use Infinite Bookshelf, you can use the hosted version at [bookshelfs.streamlit.app](https://bookshelfs.streamlit.app)
 > Alternatively, you can run Infinite Bookshelf locally with streamlit using the quickstart instructions.
 
 
 ### Hosted on Streamlit:
 
-To use Infinite Bookshelf, you can use the hosted version at [infinite-bookshelfs.streamlit.app](https://infinite-bookshelfs.streamlit.app)
+To use Infinite Bookshelf, you can use the hosted version at [bookshelfs.streamlit.app](https://bookshelfs.streamlit.app)
 
 
 ### Run locally:
